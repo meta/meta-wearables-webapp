@@ -47,16 +47,18 @@ import {
 } from './lib/cdp.mjs';
 
 /**
- * Locate every at-rule block in a stylesheet, so a used rule can be re-wrapped in the
- * conditions it was written under.
+ * Locate every block in a stylesheet with the text that opens it, so a used rule can be
+ * re-wrapped in what it was written under: an at-rule (`@media …`) or, with CSS nesting, a
+ * parent rule (`.card { .title { … } }`). A nested rule lifted out to top level applies to every
+ * matching element on the page, not just the ones inside its parent.
  *
  * Skips comments and quoted strings so a brace inside either does not shift the nesting.
- * `@import`-style statements end at `;` and open no block.
+ * A statement that ends at `;` (`@import`, every declaration) opens no block.
  */
-function atRuleBlocks(text) {
+function enclosingBlocks(text) {
   const blocks = [];
   const stack = [];
-  let pendingAt = null;
+  let segStart = 0;
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
@@ -72,27 +74,36 @@ function atRuleBlocks(text) {
       i += 1;
       continue;
     }
-    if (ch === '@') { pendingAt = i; i += 1; continue; }
-    if (ch === ';') { pendingAt = null; i += 1; continue; }
+    if (ch === ';') { segStart = i + 1; i += 1; continue; }
     if (ch === '{') {
-      stack.push(pendingAt == null ? null : { prelude: text.slice(pendingAt, i).trim(), bodyStart: i + 1 });
-      pendingAt = null;
+      stack.push({ prelude: text.slice(segStart, i).trim(), bodyStart: i + 1 });
+      segStart = i + 1;
       i += 1;
       continue;
     }
     if (ch === '}') {
-      // Also clears any dangling `@`: a final declaration with an unquoted @ and no trailing
-      // semicolon (`.a{background:url(logo@2x.png) no-repeat}`) would otherwise make the next
-      // `{` look like an at-rule with a garbage prelude.
-      pendingAt = null;
       const top = stack.pop();
-      if (top) blocks.push({ ...top, bodyEnd: i });
+      if (top && top.prelude) blocks.push({ ...top, bodyEnd: i });
+      segStart = i + 1;
       i += 1;
       continue;
     }
     i += 1;
   }
   return blocks;
+}
+
+// Total length of a set of [start, end) ranges, counting overlaps once. CDP reports a nesting
+// parent and its children as separate used rules whose ranges overlap.
+function unionLength(ranges) {
+  let total = 0;
+  let end = -1;
+  for (const [s, e] of [...ranges].sort((x, y) => x[0] - y[0])) {
+    if (e <= end) continue;
+    total += e - Math.max(s, end);
+    end = e;
+  }
+  return total;
 }
 
 const A = parseArgs(process.argv.slice(2));
@@ -247,13 +258,13 @@ try {
   for (const [id, h] of sheets) {
     if (h.origin === 'regular') perSheet.set(id, { used: 0, total: h.len || 0 });
   }
-  for (const r of ruleUsage) {
-    if (!r.used) continue;
-    const s = perSheet.get(r.styleSheetId);
-    if (!s) continue;
-    s.used += r.endOffset - r.startOffset;
-    perSheet.set(r.styleSheetId, s);
+  const rangesBySheet = new Map();
+  for (const r of used) {
+    if (!perSheet.has(r.styleSheetId)) continue;
+    if (!rangesBySheet.has(r.styleSheetId)) rangesBySheet.set(r.styleSheetId, []);
+    rangesBySheet.get(r.styleSheetId).push([r.startOffset, r.endOffset]);
   }
+  for (const [id, ranges] of rangesBySheet) perSheet.get(id).used = unionLength(ranges);
 
   console.log('  stylesheet                                     used source / total source   critical%');
   let grandUsed = 0, grandTotal = 0;
@@ -273,9 +284,9 @@ try {
   );
 
   // Emit app-owned used rules, in source order per sheet, as an inlinable block. Rules inside an
-  // at-rule get their wrapper rebuilt: a rule lifted out of `@media (min-width: 900px)` and
-  // inlined at top level applies unconditionally, which changes the very rendering the
-  // critical set is supposed to preserve.
+  // at-rule or a nesting parent get their wrapper rebuilt: a rule lifted out of
+  // `@media (min-width: 900px)` and inlined at top level applies unconditionally, which changes
+  // the very rendering the critical set is supposed to preserve.
   const out = [];
   const skippedToolkitSheets = [];
   const skippedUnselectedSheets = [];
@@ -300,16 +311,27 @@ try {
       skippedUnselectedSheets.push(name);
       continue;
     }
-    const blocks = atRuleBlocks(text);
+    const blocks = enclosingBlocks(text);
+    // CDP also reports the at-rule itself as a used "rule". Its range covers the prelude and
+    // sometimes the opening brace or the whole block, so a `{` test alone is not enough — a
+    // fragment like `(min-width: 1px){` unbalances the output, and a whole `@media` block would
+    // be emitted wholesale, unused rules included. A real style rule carries a complete
+    // declaration block and does not start with `@`.
+    const whole = mine.filter((r) => {
+      const raw = text.slice(r.startOffset, r.endOffset).trim();
+      return !raw.startsWith('@') && raw.includes('{') && raw.includes('}');
+    });
+    // Keep only ranges no other kept range already covers: a nesting parent's text contains its
+    // children verbatim, and emitting both writes the children twice, once outside the parent.
+    const kept = [];
+    for (const r of whole.sort((a, b) => a.startOffset - b.startOffset || b.endOffset - a.endOffset)) {
+      if (kept.some((k) => k.startOffset <= r.startOffset && k.endOffset >= r.endOffset)) continue;
+      kept.push(r);
+    }
     const sheetOut = [];
     let hasUnsafeRelativeUrl = false;
-    for (const r of mine) {
+    for (const r of kept) {
       const raw = text.slice(r.startOffset, r.endOffset).trim();
-      // CDP also reports the at-rule itself as a used "rule". Its range covers the prelude and
-      // sometimes the opening brace, so testing for `{` alone is not enough — a fragment like
-      // `(min-width: 1px){` slips through and unbalances the output. A real style rule always
-      // carries a complete declaration block.
-      if (!raw.includes('{') || !raw.includes('}')) continue;
       if (sourceUrl !== '(inline)' && containsRelativeCssUrl(raw)) {
         hasUnsafeRelativeUrl = true;
         break;
