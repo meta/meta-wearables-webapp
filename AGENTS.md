@@ -643,8 +643,8 @@ Key details:
   For a same-origin stylesheet whose contents and license you own, rerun with a new `--out
   critical.css` path and the exact reported source (for example `--owned-style /app.css`), inline the
   candidate, load the rest non-blocking, and re-measure. The tool refuses to overwrite an existing
-  output file, never extracts cross-origin or unselected sheets, and refuses rules with a relative
-  `url(...)`. In a Toolkit app, sheets containing Toolkit markers stay report-only. Do not extract,
+  output file, never extracts cross-origin or unselected sheets, refuses rules with a relative
+  `url(...)`, and keeps sheets that use `@layer` report-only. In a Toolkit app, sheets containing Toolkit markers stay report-only. Do not extract,
   rewrite, or separately load installed Toolkit CSS, because the Toolkit `App` owns that stylesheet
   and its load order.
 - **Duplicate bytes.** Use `measure.mjs --by-type` to see bytes per resource type.

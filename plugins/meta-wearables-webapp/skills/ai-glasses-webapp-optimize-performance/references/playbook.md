@@ -46,7 +46,9 @@ reported source (for example, `--owned-style /app.css`). Inline the candidate,
 load the rest non-blocking, and re-measure. The tool refuses to overwrite an
 existing output file and never extracts cross-origin or unselected sheets.
 It also refuses to extract a selected rule with a relative `url(...)`, because
-moving that rule inline would change how the asset path resolves.
+moving that rule inline would change how the asset path resolves, and keeps a
+sheet that uses `@layer` report-only, because a subset cannot keep the layer
+order that decides which rule wins.
 
 For a UI Toolkit app, use this report to optimize authored shell CSS. A sheet
 containing Toolkit markers is report-only and is excluded from output. Do not

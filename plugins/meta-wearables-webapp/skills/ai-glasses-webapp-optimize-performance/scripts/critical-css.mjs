@@ -291,6 +291,7 @@ try {
   const skippedToolkitSheets = [];
   const skippedUnselectedSheets = [];
   const skippedRelativeUrlSheets = [];
+  const skippedLayerSheets = [];
   for (const [id, text] of texts) {
     const mine = used.filter((r) => r.styleSheetId === id).sort((a, b) => a.startOffset - b.startOffset);
     const sourceUrl = sheets.get(id)?.url || '(inline)';
@@ -309,6 +310,15 @@ try {
     }
     if (!sameOrigin || !ownedStyle || ![sourceUrl, name].includes(ownedStyle)) {
       skippedUnselectedSheets.push(name);
+      continue;
+    }
+    // Cascade layers: a statement like `@layer base, components;` fixes the order layers win in,
+    // and a rule's layer, not its position, decides the cascade. Extracting a subset reorders or
+    // drops those declarations, and the first `@layer` the document sees fixes the order for
+    // good, so loading the full sheet afterwards cannot repair it. Keep layered sheets
+    // report-only rather than emit a candidate that renders differently.
+    if (/@layer\b/i.test(text)) {
+      skippedLayerSheets.push(name);
       continue;
     }
     const blocks = enclosingBlocks(text);
@@ -368,6 +378,12 @@ try {
     console.log(
       `  kept ${skippedRelativeUrlSheets.length} selected stylesheet(s) report-only because ` +
         'inlining would change relative url(...) resolution',
+    );
+  }
+  if (skippedLayerSheets.length) {
+    console.log(
+      `  kept ${skippedLayerSheets.length} selected stylesheet(s) report-only because ` +
+        'they use @layer, whose order an extracted subset cannot preserve',
     );
   }
   if (outputPath && css) {
