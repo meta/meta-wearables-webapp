@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 import {spawn, spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
@@ -354,7 +361,11 @@ async function runBrowserChecks() {
       if (runtime.focusableCount > 1 && !focusResult.directionalMove) {
         fail('Arrow keys did not move focus between visible targets');
       }
-      if (!focusResult.enterActivated) fail('Enter did not activate a visible button');
+      if (!focusResult.enterActivated) {
+        fail(focusResult.enterActivationCount === null
+          ? 'No visible button is available for the Enter activation check'
+          : `Enter activated the selected button ${focusResult.enterActivationCount ?? 'an unknown number of'} times; expected exactly once`);
+      }
       if (!focusResult.focusRestored) fail('Escape/Back left focus unset after activation');
       const heapAfterScenario = await page.evaluate(() => performance.memory?.usedJSHeapSize ?? 0);
       if (heapAfterScenario >= 128 * 1024 * 1024) {
@@ -499,7 +510,7 @@ async function loadBrowserDependencies() {
 
 async function exerciseFocus(page, count) {
   const selector = 'button:not([disabled]),a[href],input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
-  if (!count) return {focused: false, directionalMove: false, enterActivated: false, focusRestored: false};
+  if (!count) return {focused: false, directionalMove: false, enterActivated: false, enterActivationCount: null, focusRestored: false};
   const visibleIndices = await page.locator(selector).evaluateAll(elements => elements
     .map((element, index) => ({element, index}))
     .filter(({element}) => {
@@ -527,19 +538,41 @@ async function exerciseFocus(page, count) {
     });
     if (marker && marker !== beforeMarker) moved = true;
   }
-  let enterActivated = false;
+  let enterActivationCount = null;
   if (hasButton) {
     await button.focus();
-    await page.evaluate(() => {
+    await button.evaluate(target => {
       globalThis.__wearablesActivationCount = 0;
-      document.addEventListener('click', () => { globalThis.__wearablesActivationCount += 1; }, {once: true, capture: true});
+      globalThis.__wearablesActivationController = new AbortController();
+      document.addEventListener('click', event => {
+        if (event.composedPath().includes(target)) globalThis.__wearablesActivationCount += 1;
+      }, {
+        capture: true,
+        signal: globalThis.__wearablesActivationController.signal,
+      });
     });
-    await page.keyboard.press('Enter');
-    enterActivated = await page.evaluate(() => globalThis.__wearablesActivationCount === 1);
+    let activationFailed = false;
+    try {
+      await page.keyboard.press('Enter');
+      enterActivationCount = await page.evaluate(() => globalThis.__wearablesActivationCount);
+    } catch (error) {
+      activationFailed = true;
+      throw error;
+    } finally {
+      try {
+        await page.evaluate(() => {
+          globalThis.__wearablesActivationController?.abort();
+          delete globalThis.__wearablesActivationController;
+          delete globalThis.__wearablesActivationCount;
+        });
+      } catch (error) {
+        if (!activationFailed) throw error;
+      }
+    }
   }
   await page.keyboard.press('Escape');
   const focused = await page.evaluate(() => document.activeElement !== document.body && document.activeElement !== null);
-  return {focused, directionalMove: moved, enterActivated, focusRestored: focused};
+  return {focused, directionalMove: moved, enterActivated: enterActivationCount === 1, enterActivationCount, focusRestored: focused};
 }
 
 function sensorMocks() {
