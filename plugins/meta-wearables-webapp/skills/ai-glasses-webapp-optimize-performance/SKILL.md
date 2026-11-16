@@ -29,7 +29,9 @@ Toolkit network or bundle cost separately; do not hide it, but do not
 patch dependency code to remove it.
 
 Everything runs against local Chrome over the Chrome DevTools Protocol. The
-profile lets a laptop rank changes without glasses. The zero-dependency scripts
+profile lets a laptop rank changes without glasses. CPU throttling is relative
+to that host, not a device emulator or a prediction of device timing. Compare
+builds on the same host under the same conditions. The zero-dependency scripts
 require Node.js 22 or newer.
 
 ## The device envelope
@@ -38,7 +40,7 @@ require Node.js 22 or newer.
 |---|---|---|
 | Link | ~500 Kbps down | **1 KB ≈ 16 ms** (62,500 B/s). A 300 KB payload is ~4.8 s of link time before anything runs |
 | Latency | ~150 ms RTT | Every extra round trip costs about 150 ms |
-| CPU | ~12× slower than a modern laptop core | Parse and hydrate dominate; a 1 MB bundle is not "fast to parse" |
+| CPU | 12× CDP slowdown on the test host | Parse and hydrate can dominate; this is not a fixed hardware equivalence |
 | Viewport | 600×600, DPR 1 | Small images; no need for 2× assets |
 | Panel | 30 Hz | The frame budget is **33 ms**, not 16 ms |
 
@@ -117,10 +119,16 @@ It prints one line — the median over N cold loads, plus the spread:
 cold  n=10  FCP 420 ms   visible 262 ms (spread 12)   HTTP wire 872 B   reqs 2
 ```
 
-- **FCP** — first pixel of anything
-- **visible** — your app's real content on screen (see the oracle below)
+- **FCP** — first paint of content such as text, an image, or non-white canvas pixels; not a plain background
+- **visible** — the first page-side observation that your content oracle is true
 - **HTTP wire** / **reqs** — completed HTTP(S) response bytes and request count.
   A startup WebSocket makes the run invalid because its traffic is not counted
+
+`visible` is a DOM/predicate timestamp, not proof of a painted frame or a working
+input handler. Its watcher can fire from a mutation observer before paint. Verify
+that the intended content is visible, then perform a meaningful action and check
+its result separately. A splash or inert button is not success. Record that action
+check separately; these scripts do not measure TTFI or field INP.
 
 Warm launch is a **separate run**, add `--warm`: it clears the explicitly
 authorized throwaway profile, loads once to populate the cache and any service
@@ -137,9 +145,9 @@ Each trap below has produced a confident, wrong answer.
 
 ### 1. FCP is not "the app is usable"
 
-FCP fires for a background colour. If you optimise FCP you will paint a blank box sooner and
-call it a win. **Define a content oracle**: a predicate that is true only when the user can
-actually use the app.
+FCP can fire for a logo or splash text before useful content is ready. Optimizing
+that paint alone can improve the number without helping the user. **Define a
+content oracle** for the intended screen, then verify a meaningful action separately.
 
 `--oracle` is interpolated into `!!( ... )`, so it must be a **single expression**. Anything
 containing statements has to be an IIFE, or it is a syntax error and the run
@@ -189,7 +197,7 @@ reload.
 
 ### 4. One run is not a measurement
 
-The page timestamps the first frame the oracle passes with `performance.now()`.
+The page timestamps the first observation that the oracle passes with `performance.now()`.
 Machine noise remains, and three runs cannot resolve a small effect.
 
 - Use **n ≥ 10**.
@@ -237,6 +245,7 @@ parallel requests do not add throughput on this link.
 - [ ] Storage clearing was explicitly authorized with `--clear-storage`
 - [ ] A content oracle is defined that an error page would fail
 - [ ] The oracle also requires any splash or overlay to be gone
+- [ ] Visible content and a meaningful action's result were verified separately from the oracle timestamp
 - [ ] Baseline recorded: cold FCP, cold visible, warm visible, wire bytes, request count
 - [ ] n ≥ 10 per arm, comparisons interleaved rather than sequential
 - [ ] A null control (build vs itself) was run in the same session

@@ -465,6 +465,8 @@ compare two builds, and before shipping.
 - Report Toolkit network or bundle cost separately. Do not hide it, and do not patch dependency code
   to remove it.
 - The scripts have no dependencies and need **Node.js 22 or newer** and a local Chrome.
+- CPU throttling is relative to that host, not a device emulator or a prediction of device timing.
+  Compare builds on the same host under the same conditions.
 
 ### The device envelope
 
@@ -472,7 +474,7 @@ compare two builds, and before shipping.
 |---|---|---|
 | Link | ~500 Kbps down | **1 KB ≈ 16 ms** (62,500 B/s). A 300 KB payload is ~4.8 s of link time before anything runs |
 | Latency | ~150 ms RTT | Every extra round trip costs about 150 ms |
-| CPU | ~12× slower than a modern laptop core | Parse and hydrate dominate; a 1 MB bundle is not "fast to parse" |
+| CPU | 12× CDP slowdown on the test host | Parse and hydrate can dominate; this is not a fixed hardware equivalence |
 | Viewport | 600×600, DPR 1 | Small images; no need for 2× assets |
 | Panel | 30 Hz | The frame budget is **33 ms**, not 16 ms |
 
@@ -545,10 +547,15 @@ the median over N cold loads, plus the spread.
 cold  n=10  FCP 420 ms   visible 262 ms (spread 12)   HTTP wire 872 B   reqs 2
 ```
 
-- **FCP:** the first pixel of anything.
-- **visible:** your app's real content on screen, according to the oracle.
+- **FCP:** first paint of content such as text, an image, or non-white canvas pixels; not a plain background.
+- **visible:** the first page-side observation that your content oracle is true.
 - **HTTP wire** / **reqs:** completed HTTP(S) response bytes and the request count. A startup
   WebSocket invalidates the run because its traffic is not counted.
+
+`visible` is a DOM/predicate timestamp, not proof of a painted frame or a working input handler.
+Its watcher can fire from a mutation observer before paint. Verify that the intended content is
+visible, then perform a meaningful action and check its result separately. A splash or inert button
+is not success. These scripts do not measure TTFI or field INP.
 
 Measure warm launch as a **separate run** with `--warm`. It loads once to populate the cache and any
 service worker, then measures the reload. Record both. Other flags: `--by-type` (bytes per resource
@@ -557,8 +564,9 @@ result. `--smoke --reps 2` only checks the plumbing. Never cite a smoke result a
 
 ### Four traps that make a measurement lie
 
-1. **FCP is not "usable."** FCP fires for a background color. Define a **content oracle** that is
-   true only when the user can actually use the app. `--oracle` is wrapped in `!!( ... )`, so it must
+1. **FCP is not "usable."** FCP can fire for a logo or splash text before useful content is ready.
+   Define a **content oracle** for the intended screen, then verify a meaningful action separately.
+   `--oracle` is wrapped in `!!( ... )`, so it must
    be a **single expression**. Wrap statements in an IIFE, or the run reports `NEVER` and exits
    nonzero. Without a real oracle, a network error page scores well.
 
@@ -690,6 +698,7 @@ Key details:
 - [ ] Storage clearing was explicitly authorized with `--clear-storage`
 - [ ] A content oracle is defined that an error page would fail
 - [ ] The oracle also requires any splash or overlay to be gone
+- [ ] Visible content and a meaningful action's result were verified separately from the oracle timestamp
 - [ ] Baseline recorded: cold FCP, cold visible, warm visible, wire bytes, request count
 - [ ] n ≥ 10 per arm, comparisons interleaved rather than sequential
 - [ ] A null control (build vs itself) was run in the same session

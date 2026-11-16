@@ -311,12 +311,11 @@ export function readyExpression(oracle) {
 }
 
 /**
- * Page-side watcher that timestamps the first frame on which the oracle is true.
+ * Page-side watcher that timestamps the first observation that the oracle is true.
  *
- * Polling over CDP resolves to about the poll interval plus a round trip, which is coarser
- * than the differences this method asks you to act on. This records `performance.now()` on an
- * animation frame instead, so the number is frame-accurate and measured from navigation start
- * — the same origin as FCP.
+ * The timestamp uses performance.now(), relative to navigation start like FCP. The
+ * earliest animation-frame callback, mutation observer or interval that sees readiness
+ * wins; this is not proof of paint or of a successfully handled input.
  */
 export function watcherScript(oracle) {
   return `(function(){
@@ -522,8 +521,8 @@ export async function measureOnce({
     let visible = null;
     while (Date.now() < deadline) {
       await sleep(Math.min(150, remaining()));
-      // The page timestamps itself on the frame the oracle first passes; this loop only asks
-      // whether that has happened yet, so the poll interval does not bound the resolution.
+      // The page timestamps the first observation that the oracle passes; this loop only
+      // retrieves that timestamp, so the poll interval does not bound its resolution.
       const budget = Math.min(15000, remaining());
       if (!budget) break;
       const r = await cdp
