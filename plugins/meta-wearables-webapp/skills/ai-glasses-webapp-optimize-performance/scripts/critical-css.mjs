@@ -188,9 +188,7 @@ try {
     expression: 'location.origin',
   });
   const pageOrigin = originResult?.result?.value;
-  if (pageOrigin !== new URL(URL_ARG).origin) {
-    throw new ReportedFailure('the page redirected to another origin; rerun with the final production URL.');
-  }
+  assertPageOrigin(pageOrigin, new URL(URL_ARG).origin);
   if (developmentResources.size) {
     console.error('  ERROR: a development/HMR resource appeared during observation; nothing was written:');
     for (const resource of developmentResources) console.error(`     ${resource}`);
@@ -369,6 +367,15 @@ try {
 }
 process.exitCode = exitCode;
 
+function assertPageOrigin(pageOrigin, expected) {
+  if (typeof pageOrigin !== 'string' || !/^https?:\/\//.test(pageOrigin)) {
+    throw new ReportedFailure('could not establish the page origin; check the production URL and rerun.');
+  }
+  if (pageOrigin !== expected) {
+    throw new ReportedFailure('the page redirected to another origin; rerun with the final production URL.');
+  }
+}
+
 async function firstScreenRuleUsage(cdp, url, ready) {
   const name = `__criticalCssReady_${randomUUID().replaceAll('-', '')}`;
   const origin = new URL(url).origin;
@@ -395,7 +402,7 @@ async function firstScreenRuleUsage(cdp, url, ready) {
     if (event.name !== name || settled || stopping) return;
     try {
       const payload = JSON.parse(event.payload);
-      if (payload.origin !== origin) throw new ReportedFailure('first screen redirected to another origin; rerun with the final production URL.');
+      assertPageOrigin(payload.origin, origin);
       if (payload.hidden) throw new ReportedFailure('the page is hidden; keep the Chrome window and measured tab visible, then rerun.');
       stopping = true;
       cdp.send('CSS.stopRuleUsageTracking', {}, remaining()).then(
