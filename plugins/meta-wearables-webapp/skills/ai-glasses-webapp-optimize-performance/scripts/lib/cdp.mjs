@@ -540,7 +540,7 @@ export async function measureOnce({
     const fcpBudget = Math.min(15000, remaining());
     const fcpRes = fcpBudget ? await cdp.send('Runtime.evaluate', {
       returnByValue: true,
-      expression: `(performance.getEntriesByName('first-contentful-paint')[0]||{}).startTime ?? null`,
+      expression: `(performance.getEntriesByName('first-contentful-paint', 'paint')[0]||{}).startTime ?? null`,
     }, fcpBudget).catch(() => null) : null;
     // null, not 0: a page that never painted must stay distinguishable from one that painted
     // instantly, or the zeros quietly drag the median down.
