@@ -276,17 +276,17 @@ export async function clearOriginData(cdp, url) {
   });
 }
 
-/** Wait for a quiet network window; false means byte/request totals are incomplete. */
-export async function waitForNetworkIdle(networkState, timeoutMs, idleMs = 2000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+/** Wait for a quiet window established by the deadline; false means totals are incomplete. */
+export async function waitForNetworkIdle(networkState, timeoutMs, idleMs = 2000, deadline = Date.now() + timeoutMs) {
+  for (;;) {
+    const now = Date.now();
     if (
       networkState.inFlight.size === 0 &&
-      Date.now() - networkState.lastActivity >= idleMs
+      Math.min(now, deadline) - networkState.lastActivity >= idleMs
     ) return true;
-    await sleep(100);
+    if (!(now < deadline)) return false;
+    await sleep(Math.min(100, deadline - now));
   }
-  return false;
 }
 
 /** Conservative source-image scale needed to preserve the current rendered result. */
@@ -474,7 +474,7 @@ export async function measureOnce({
       failedRequests: [...failedRequests],
       finalUrl,
       originMatches,
-      networkComplete,
+      networkComplete: networkComplete && inFlight.size === 0,
       timeoutPhase,
       inFlightRequests: inFlight.size,
     });
@@ -490,7 +490,7 @@ export async function measureOnce({
         timeoutPhase = 'warm preload';
         return result();
       }
-      warmPreloadComplete = await waitForNetworkIdle(networkState, remaining());
+      warmPreloadComplete = await waitForNetworkIdle(networkState, remaining(), undefined, deadline);
       if (!warmPreloadComplete) {
         timeoutPhase = 'warm preload network idle';
         return result();
@@ -540,20 +540,26 @@ export async function measureOnce({
     if (visible == null && !remaining()) timeoutPhase = 'content oracle';
     // Late, non-blocking assets still count. A timeout marks the result invalid instead of
     // silently omitting unfinished transfers from the total.
-    const measuredNetworkComplete = await waitForNetworkIdle(networkState, remaining());
-    const networkComplete = warmPreloadComplete && measuredNetworkComplete;
+    const measuredNetworkComplete = await waitForNetworkIdle(networkState, remaining(), undefined, deadline);
+    let networkComplete = warmPreloadComplete && measuredNetworkComplete;
     if (!networkComplete && !timeoutPhase) timeoutPhase = 'network idle';
     const fcpBudget = Math.min(15000, remaining());
     const fcpRes = fcpBudget ? await cdp.send('Runtime.evaluate', {
       returnByValue: true,
       expression: `(performance.getEntriesByName('first-contentful-paint', 'paint')[0]||{}).startTime ?? null`,
     }, fcpBudget).catch(() => null) : null;
+    const fcpReadFinished = Date.now();
     // null, not 0: a page that never painted must stay distinguishable from one that painted
     // instantly, or the zeros quietly drag the median down.
     const raw = fcpRes?.result?.value;
     const fcp = typeof raw === 'number' ? Math.round(raw) : null;
-    if (fcp == null && !timeoutPhase && !remaining()) timeoutPhase = 'FCP';
+    if (!timeoutPhase && (fcpReadFinished > deadline || (fcp == null && !remaining()))) timeoutPhase = 'FCP';
 
+    // Request events can arrive while the FCP read is pending; settle those before snapshotting.
+    if (networkComplete) {
+      networkComplete = await waitForNetworkIdle(networkState, remaining(), undefined, deadline);
+      if (!networkComplete && !timeoutPhase) timeoutPhase = 'network idle';
+    }
     return result({fcp, visible, networkComplete});
   } catch (error) {
     primaryError = error;
