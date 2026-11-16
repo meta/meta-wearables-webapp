@@ -47,6 +47,10 @@ export function assertKnownArgs(args, names) {
   }
 }
 
+function isHttpUrl(url) {
+  return /^https?:/.test(url);
+}
+
 /** Resource names injected by common development/HMR servers. */
 export function isDevelopmentServerResource(url) {
   return [
@@ -376,7 +380,7 @@ export async function measureOnce({
     cdp.on('Network.requestWillBeSent', (p) => {
       const requestUrl = p.request?.url || '';
       if (isDevelopmentServerResource(requestUrl)) developmentResources.add(requestUrl);
-      if (p.redirectResponse) {
+      if (p.redirectResponse && isHttpUrl(p.redirectResponse.url || '')) {
         const redirectBytes = p.redirectResponse.encodedDataLength || 0;
         wire += redirectBytes;
         const redirectType = p.type || 'Other';
@@ -385,7 +389,7 @@ export async function measureOnce({
       if (p.requestId) {
         inFlight.add(p.requestId);
         requestUrls.set(p.requestId, requestUrl);
-        requests += 1;
+        if (isHttpUrl(requestUrl)) requests += 1;
         networkState.lastActivity = Date.now();
       }
     });
@@ -405,10 +409,12 @@ export async function measureOnce({
     cdp.on('Network.loadingFinished', (p) => {
       if (!inFlight.delete(p.requestId)) return;
       networkState.lastActivity = Date.now();
-      const n = p.encodedDataLength || 0;
-      wire += n;
-      const t = typeOf.get(p.requestId) || 'Other';
-      byType[t] = (byType[t] || 0) + n;
+      if (isHttpUrl(requestUrls.get(p.requestId) || '')) {
+        const n = p.encodedDataLength || 0;
+        wire += n;
+        const t = typeOf.get(p.requestId) || 'Other';
+        byType[t] = (byType[t] || 0) + n;
+      }
       requestUrls.delete(p.requestId);
       typeOf.delete(p.requestId);
     });
