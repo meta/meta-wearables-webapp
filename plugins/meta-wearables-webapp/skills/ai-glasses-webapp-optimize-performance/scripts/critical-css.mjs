@@ -42,7 +42,6 @@ import {
   openTab,
   parseArgs,
   readyExpression,
-  sleep,
   strArg,
 } from './lib/cdp.mjs';
 
@@ -183,60 +182,15 @@ try {
   });
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: PROFILE.cpu });
   await cdp.send('Page.bringToFront');
-  await cdp.send('CSS.startRuleUsageTracking');
-
-  const loaded = cdp.waitEvent('Page.loadEventFired', 60000).then(() => true, () => false);
-  try {
-    await cdp.send('Page.navigate', { url: URL_ARG }, 60000);
-  } catch (error) {
-    console.error(`  ERROR: navigation failed: ${error.message}`);
-    throw new ReportedFailure();
-  }
-  if (!await loaded) {
-    console.error('  ERROR: the production page did not finish loading within 60 seconds.');
-    throw new ReportedFailure();
-  }
-  if (developmentResources.size) {
-    console.error('  ERROR: a development/HMR resource was loaded; inspect production output instead:');
-    for (const resource of developmentResources) console.error(`     ${resource}`);
-    throw new ReportedFailure();
-  }
+  const { ruleUsage } = await firstScreenRuleUsage(cdp, URL_ARG, ready);
   const originResult = await cdp.send('Runtime.evaluate', {
     returnByValue: true,
     expression: 'location.origin',
   });
   const pageOrigin = originResult?.result?.value;
-  if (typeof pageOrigin !== 'string' || !/^https?:\/\//.test(pageOrigin)) {
-    console.error('  ERROR: could not establish the final page origin; nothing was written.');
-    throw new ReportedFailure();
-  }
   if (pageOrigin !== new URL(URL_ARG).origin) {
-    console.error('  ERROR: the page redirected to another origin; rerun with the final production URL.');
-    throw new ReportedFailure();
+    throw new ReportedFailure('the page redirected to another origin; rerun with the final production URL.');
   }
-
-  // Stop as soon as the first screen is up. Waiting longer folds in rules that only later
-  // screens need, which is exactly what you are trying to keep out of the critical set.
-  const started = Date.now();
-  const deadline = started + 60000;
-  let fired = false;
-  while (Date.now() < deadline) {
-    await sleep(200);
-    const r = await cdp.send('Runtime.evaluate', { returnByValue: true, expression: ready }, 15000).catch(() => null);
-    const v = r?.result?.value ? JSON.parse(r.result.value) : null;
-    if (v && v.ready) { fired = true; break; }
-  }
-  if (!fired) {
-    console.error(
-      `  ERROR: the oracle never became true in ${Math.round((Date.now() - started) / 1000)}s.\n` +
-        '  Rule usage has been accumulating that whole time, so what follows would be the\n' +
-        '  everything-so-far set, not the first-screen set — the opposite of useful. Fix\n' +
-        '  --oracle (or the app) and re-run. Nothing was written.',
-    );
-    throw new ReportedFailure();
-  }
-
-  const { ruleUsage } = await cdp.send('CSS.stopRuleUsageTracking');
   if (developmentResources.size) {
     console.error('  ERROR: a development/HMR resource appeared during observation; nothing was written:');
     for (const resource of developmentResources) console.error(`     ${resource}`);
@@ -401,8 +355,10 @@ try {
   }
 } catch (error) {
   primaryError = error;
-  if (error instanceof ReportedFailure) exitCode = 1;
-  else throw error;
+  if (error instanceof ReportedFailure) {
+    if (error.message) console.error(`  ERROR: ${error.message} Nothing was written.`);
+    exitCode = 1;
+  } else throw error;
 } finally {
   let cleanupError = null;
   if (grantMedia) {
@@ -412,6 +368,95 @@ try {
   if (cleanupError && !primaryError) throw cleanupError;
 }
 process.exitCode = exitCode;
+
+async function firstScreenRuleUsage(cdp, url, ready) {
+  const name = `__criticalCssReady_${randomUUID().replaceAll('-', '')}`;
+  const origin = new URL(url).origin;
+  const deadline = Date.now() + 60000;
+  const remaining = () => Math.max(1, deadline - Date.now());
+  let settled = false;
+  let stopping = false;
+  let finish;
+  const observed = new Promise((resolve, reject) => {
+    finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      error ? reject(error) : resolve(result);
+    };
+  });
+  // Observation can fail while a setup/navigation command is still awaiting its reply.
+  observed.catch(() => {});
+  let interrupt;
+  const interrupted = new Promise((resolve, reject) => { interrupt = reject; });
+  interrupted.catch(() => {});
+  const timer = setTimeout(() => interrupt(new ReportedFailure('first-screen observation timed out; fix --oracle (or the app) and rerun.')), remaining());
+  const cancel = () => interrupt(new ReportedFailure('critical CSS observation cancelled; rerun when ready.'));
+  cdp.on('Runtime.bindingCalled', (event) => {
+    if (event.name !== name || settled || stopping) return;
+    try {
+      const payload = JSON.parse(event.payload);
+      if (payload.origin !== origin) throw new ReportedFailure('first screen redirected to another origin; rerun with the final production URL.');
+      if (payload.hidden) throw new ReportedFailure('the page is hidden; keep the Chrome window and measured tab visible, then rerun.');
+      stopping = true;
+      cdp.send('CSS.stopRuleUsageTracking', {}, remaining()).then(
+        result => finish(null, result),
+        error => finish(error),
+      );
+    } catch (error) {
+      finish(error);
+    }
+  });
+  const setup = (method, params) => Promise.race([
+    cdp.send(method, params, remaining()), interrupted,
+  ]);
+  try {
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
+    await setup('Runtime.addBinding', {name});
+    // Parser mutations can precede stylesheet availability; sample the DOM oracle on rAF.
+    await setup('Page.addScriptToEvaluateOnNewDocument', {source: `(() => {
+      if (window !== window.top) return;
+      let done = false;
+      let frame;
+      const notify = hidden => {
+        if (done) return;
+        done = true;
+        cancelAnimationFrame(frame);
+        document.removeEventListener('visibilitychange', visibility);
+        window[${JSON.stringify(name)}](JSON.stringify({origin: location.origin, hidden}));
+      };
+      const visibility = () => {
+        if (document.visibilityState === 'hidden') notify(true);
+      };
+      const check = () => {
+        visibility();
+        if (done) return;
+        if (!JSON.parse(${ready}).ready) {
+          frame = requestAnimationFrame(check);
+          return;
+        }
+        notify(false);
+      };
+      document.addEventListener('visibilitychange', visibility);
+      visibility();
+      if (!done) frame = requestAnimationFrame(check);
+    })();`});
+    await setup('CSS.startRuleUsageTracking', {});
+    const navigationFailure = detail => new ReportedFailure(`navigation failed: ${detail}; check the production URL and rerun.`);
+    const navigated = cdp.send('Page.navigate', {url}, remaining()).then(result => {
+      if (result.errorText || result.isDownload) throw navigationFailure(result.errorText || 'download');
+    }, error => { throw navigationFailure(error.message); });
+    // A DOM-oracle notification closes the observation window, not the page load event.
+    const [, usage] = await Promise.race([Promise.all([navigated, observed]), interrupted]);
+    return usage;
+  } finally {
+    settled = true;
+    clearTimeout(timer);
+    process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGTERM', cancel);
+    // The caller closes the disposable tab, including its observer, binding and CSS tracker.
+  }
+}
 
 function pathExistsNoFollow(path) {
   try {
