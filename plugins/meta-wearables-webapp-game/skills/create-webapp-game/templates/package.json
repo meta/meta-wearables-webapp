@@ -22,7 +22,7 @@
     "audio-sizes:check": "node scripts/audio-sizes.mjs . --check"
   },
   "dependencies": {
-    "i18next": "^23.16.8",
+    "i18next": "^26.3.4",
     "i18next-browser-languagedetector": "^8.0.2",
     "three": "^0.184.0"
   },
