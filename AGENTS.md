@@ -8,7 +8,7 @@
 If your AI tool supports MCP, configure `https://mcp.developer.meta.com/wearables` as a remote HTTP MCP server and call `search_webapps_docs` for current Web Apps documentation. If MCP is unavailable, use the developer docs URL above directly.
 
 This file is the single-file edition of the `meta-wearables-webapp` plugin for tools without plugin
-support. It follows the plugin's six skills. When you have the skill files locally, each skill's
+support. It follows the plugin's skills. When you have the skill files locally, each skill's
 `SKILL.md` is authoritative; this file tells you when to use each one and what it requires.
 
 | Skill | Use it for |
@@ -16,6 +16,7 @@ support. It follows the plugin's six skills. When you have the skill files local
 | [`ai-glasses-webapp-build`](#build-ai-glasses-webapp-build) | Creating, redesigning, or extending an app: architecture, screens, routes, state, APIs, persistence, offline |
 | [`ai-glasses-webapp-ui`](#ui-toolkit-ai-glasses-webapp-ui) | Scaffolding, installing UI Toolkit for Meta Ray-Ban Display, composing any glasses UI |
 | [`ai-glasses-webapp-device`](#device-capabilities-ai-glasses-webapp-device) | Sensors, geolocation, pinch/drag, D-pad game controls, handwriting/voice text input |
+| [`ai-glasses-webapp-webmcp`](plugins/meta-wearables-webapp/skills/ai-glasses-webapp-webmcp/SKILL.md) | Meta AI voice control, reading app state, and performing app actions through WebMCP tools |
 | [`ai-glasses-webapp-test`](#test-gate-ai-glasses-webapp-test) | The deterministic quality gate run after every implementation |
 | [`ai-glasses-webapp-optimize-performance`](#performance-ai-glasses-webapp-optimize-performance) | Startup measurement and optimization before release, or when the app is slow |
 | [`ai-glasses-webapp-publish`](#publish-ai-glasses-webapp-publish) | Vercel production deployment and the add-to-glasses QR code, only on explicit request |
@@ -121,6 +122,13 @@ particular:
 `BODY1_EMPHASIZED`, `BODY2`, `BODY2_EMPHASIZED`, `LABEL`, `LABEL_EMPHASIZED`, `META1`,
 `META1_EMPHASIZED`, `META2`, `META2_EMPHASIZED`, and `META3`. Keep routine product copy at `BODY2` or
 smaller. Use larger roles only when the selected Toolkit pattern calls for them.
+
+### Meta AI integration with WebMCP
+
+For optional voice interactions with Meta AI, follow
+[ai-glasses-webapp-webmcp](plugins/meta-wearables-webapp/skills/ai-glasses-webapp-webmcp/SKILL.md)
+to expose app state and actions as WebMCP tools. This lets Meta AI read information and perform
+actions in the web app in response to the wearer's spoken requests.
 
 ### Performance targets
 

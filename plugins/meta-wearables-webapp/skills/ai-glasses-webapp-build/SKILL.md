@@ -68,6 +68,13 @@ ordinary text rather than focus stops.
 or below; use larger roles only when the selected Toolkit pattern calls for
 them.
 
+## Meta AI integration with WebMCP
+
+For optional voice interactions with Meta AI, follow
+[ai-glasses-webapp-webmcp](../ai-glasses-webapp-webmcp/SKILL.md) to expose app
+state and actions as WebMCP tools. This lets Meta AI read information and
+perform actions in the web app in response to the wearer's spoken requests.
+
 ## Performance and completion
 
 Use `ai-glasses-webapp-optimize-performance` before release and whenever an app
@@ -81,9 +88,7 @@ Run timers, animation frames, sensors, polling, and sockets only while needed;
 stop them on pause, hide, route exit, and unmount. Use local assets and bundled
 icons; do not download icon packs.
 
-Use `ai-glasses-webapp-device` for sensors or glasses-specific input, and
-`ai-glasses-webapp-webmcp` when the wearer should be able to drive the app by
-speaking to the assistant. Invoke
+Use `ai-glasses-webapp-device` for sensors or glasses-specific input. Invoke
 `ai-glasses-webapp-test` after implementation and fix every failure. Before a
 release, complete the performance pass and rerun that gate. For Toolkit apps,
 the gate runs the official structure validator and requires zero findings.
