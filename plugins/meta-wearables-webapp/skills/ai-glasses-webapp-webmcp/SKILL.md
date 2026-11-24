@@ -1,291 +1,179 @@
 ---
 name: ai-glasses-webapp-webmcp
-description: "Make an existing Meta Ray-Ban Display web app controllable by the on-device assistant. Use when the wearer should operate the app by speaking to Meta AI, when the assistant should read or change app state, or for WebMCP, model context, tool registration, or hands-free control."
+description: "Design and build Meta AI voice interactions for a Meta Ray-Ban Display web app by exposing app state and actions as WebMCP tools. Use when the wearer should ask Meta AI to read app state or perform actions in the app, or for WebMCP, model context, tool registration, agentic web apps, or hands-free control."
 argument-hint: "[app-directory] [example-utterance]"
 ---
 
-# Make a web app agent-controllable
+# Design Meta AI voice interactions for a web app
 
-Register WebMCP tools so the assistant on the glasses can operate an app that
-already works. The wearer speaks to Meta AI, Meta AI calls your tools, the app
-updates. No SDK, no speech recognition, no wake word: the browser provides the
-surface.
+The wearer asks Meta AI for something, Meta AI calls tools your app registers
+through WebMCP, and the app does the work while the screen updates. Your app
+does not implement speech recognition or voice activation. Build the app with
+`ai-glasses-webapp-build` first: voice is another way to use it, so every task
+must still work without the assistant.
 
-This is additive. The app must stay fully usable by D-pad with no assistant at
-all. Use `ai-glasses-webapp-build` for the app itself and
-`ai-glasses-webapp-device` for sensors and text composition.
+## Start from what the wearer says
 
-WebMCP is off by default and enabled per device, by Developer Mode or by
-rollout. Eligibility is decided once when the app launches and does not change
-for the rest of that session, so turning it on does not affect an already
-running app — relaunch before concluding the tools are broken.
+Before designing tools, inspect the app's screens and features and write down:
 
-## Collect utterances before designing tools
+- Five to ten requests as a wearer would say them aloud, including follow-ups:
+  "add coffee, sugar, and cream", "what's in my cart?", "remove the sugar",
+  "add another one", "start over".
+- What Meta AI should say back to each one, and what the screen should show.
 
-Do not write tools from a feature list. Ask the user for three to five whole
-sentences as a wearer would say them aloud, for example "add coffee and sugar
-and cream to my cart", "what's in my cart?", "clear it and start over". Then ask
-what the assistant should say back, and what it must never do without
-confirmation. Restate the derived tool set and get agreement before writing
-code.
+Derive the tool set from these requests, basing them on what the app already
+does. If inspecting the app does not reveal the main things a wearer would ask
+for, ask the user for example requests.
 
-Every app needs one read-only tool that reports current state, so the assistant
-can orient itself before acting.
+## Turn intents into a small tool set
 
-## One utterance is one call
+- Make one tool per user goal, not per button: `cart_add_items`, not
+  `tap_add_button`.
+- When a request names several items for the same action, accept the whole
+  list in one call. That saves round trips and avoids partial updates.
+- Provide a read-only state tool that reports what is on screen, what is
+  selected, and what changed last. Meta AI can use it to orient itself and to
+  resolve "this" and "that one".
+- Name and describe tools in the wearer's vocabulary. A description says when
+  to use the tool, not how it works. Keep descriptions short.
+- Keep the set small and focused on what the wearer actually asks for.
 
-A sentence that names three things must resolve in a single tool call. Splitting
-it into three costs three round trips, three spoken confirmations, and risks the
-last one being dropped. Take the whole list in one parameter.
+## Design each turn
 
-## Only scalar parameters reach the assistant
+The wearer hears a short reply and sees the screen. Design both.
 
-Parameters are carried as boolean, integer, number, or string. There is no array
-or object parameter type.
+- Let the voice acknowledge and the screen carry the detail. Return a
+  one-sentence `summary` of what happened along with the new state, and
+  collapse long lists ("Added 6 items"). Meta AI may not use your wording
+  verbatim, so listen to the actual replies when testing.
+- Make every change visible. Update through the same state and actions the UI
+  uses, and highlight or scroll to what changed. The reply should never say
+  "done" before the screen shows it.
+- Show progress for anything slower than instant. A tool call has a 10-second
+  deadline; for longer work, start it, return that it is in progress, show
+  progress on screen, and let the state tool report completion.
+- Return what actually changed, with short stable item IDs, so the next turn
+  can refer to it.
+- Finish tool work before the final reply. A suggestion field in a result is a
+  hint Meta AI may use, not a guarantee of what it does next.
 
-Declaring `array` or `object` carries the value as a JSON-encoded string, and
-the call fails outright when what arrives is not valid JSON of the declared
-kind. Nothing in the parameter contract asks the assistant for JSON, so prefer a
-delimited string for a spoken list and split it yourself:
+## Expose only what should be said aloud
 
-```ts
-items: {
-  type: 'string',
-  description: 'Comma-separated item names, e.g. "coffee, sugar, cream".',
-}
-```
+Everything a tool returns goes to Meta AI, even when it is never spoken, and
+replies may be spoken aloud in public. Keep results, especially the state
+tool's, to what the task needs. Never return credentials, tokens, or personal
+data the request does not require, and read sensitive information only when
+the wearer asks for it.
 
-Use `array` or `object` only when the elements carry structure a delimiter
-cannot express, and state the encoding in the description, because that is the
-only channel that can carry it.
+## Help wearers discover what they can ask
 
-Only each property's `type` and `description` and the schema's top-level
-`required` are read. `enum`, `items`, `minimum`, `maximum`, `default`, and
-nested schemas are dropped and never enforced, so express those constraints in
-the description. Parameter descriptions are truncated near 256 characters and
-tool descriptions near 1024; keep both short, since they are spent on every
-turn.
+Show a few example requests in the app, for instance in an empty state or a
+help screen. Only suggest requests your tools actually handle.
 
-## Register on `document.modelContext`
+## Build it
 
-The browser installs `document.modelContext` before page scripts run. Register
-there and install no WebMCP polyfill: a library that defines its own model
-context can capture the registration, leaving tools somewhere the assistant
-never reads, with no error raised.
-
-Registration must not be able to break the app. `registerTool` throws
-synchronously when a required member is missing, and its return value is not
-guaranteed: some implementations return a promise, others a registration handle
-or nothing. Chaining `.catch` directly on the call therefore raises
-`registerTool(...).catch is not a function` on those builds. An escaping
-exception aborts the remaining registrations, and in React, thrown from an
-effect in an app with no error boundary, it unmounts the whole app — taking the
-D-pad path down with it. Register each tool through one guarded helper instead.
+Register each tool through its own guarded call, so one failed registration
+does not block the others, and tie registrations to the screen's lifetime.
 
 ```ts
-// Tool definitions are plain data and plain functions: identical in a vanilla
-// TS app and a React one. Only the lifecycle below differs.
-
-// A handled condition is an ordinary result, not a protocol failure: Meta AI reads
-// the JSON and follows next_action. There is no failure flag — a fulfilled result is
-// always reported as success, and `isError` is dropped — so never signal failure with
-// one. Throw or reject only for what the model cannot act on, and for cancellation.
-function problem(message: string, next_action: string) {
-  return JSON.stringify({error: true, message, next_action});
+// Problems the wearer can fix are returned as data, not thrown.
+function problem(message: string, suggestion: string) {
+  return JSON.stringify({error: true, message, suggestion});
 }
 
-// Hosts flatten a list argument differently — some join the values into prose,
-// others JSON-encode the array into the string slot — so try JSON first and fall
-// back to separators. Unwrap brackets and quotes only for identifiers; free text
-// may legitimately contain them.
-function splitList(input: unknown): string[] {
-  let value = input;
-  if (typeof value === 'string' && value.trim().startsWith('[')) {
-    try {
-      const parsed: unknown = JSON.parse(value.trim());
-      if (Array.isArray(parsed)) value = parsed;
-    } catch {
-      /* fall through to separators */
-    }
-  }
-  if (Array.isArray(value)) {
-    return value.map(p => String(p ?? '').trim()).filter(Boolean);
-  }
-  const text = String(value ?? '').trim();
-  const chunks = text.includes('\n') ? text.split('\n') : text.split(',');
-  return chunks.map(c => c.trim()).filter(Boolean);
-}
-
-function safeRegister(ctx: ModelContext, tool: ModelContextTool, signal?: AbortSignal) {
+async function safeRegister(ctx: ModelContext, tool: ModelContextTool, signal?: AbortSignal) {
   try {
-    const result = ctx.registerTool(tool, signal ? {signal} : undefined); // may throw
-    // Promise on some builds, a handle or undefined on others: only chain if thenable,
-    // and use then(undefined, ...) rather than assuming .catch exists.
-    if (typeof (result as PromiseLike<unknown>)?.then === 'function') {
-      (result as PromiseLike<unknown>).then(undefined, (err: unknown) =>
-        console.error(`${tool.name} registration failed`, err),
-      );
-    }
+    await ctx.registerTool(tool, signal ? {signal} : undefined);
   } catch (err) {
+    if (signal?.aborted && err === signal.reason) return; // unmounted while registering
     console.error(`${tool.name} registration failed`, err);
   }
 }
 
-// One call per tool, so a failed registration cannot strand the ones after it.
 export function registerCartTools(ctx: ModelContext, signal?: AbortSignal) {
-  safeRegister(ctx, {
+  return safeRegister(ctx, {
     name: 'cart_add_items',
-    description:
-      'Add one or more items to the cart. Pass every item named in a single call. ' +
-      'Returns the cart contents and total.',
+    description: 'Add one or more menu items to the cart. Pass every item the wearer named in one call.',
     inputSchema: {
       type: 'object',
       properties: {
         items: {
-          type: 'string',
-          description: 'Comma-separated item names, e.g. "coffee, sugar, cream".',
+          type: 'array',
+          description: 'Item names from the menu.',
+          items: {type: 'string'},
+          minItems: 1,
         },
       },
       required: ['items'],
     },
-    execute: async ({items}: {items: unknown}) => {
-      const names = splitList(items);
-      const unknown = names.filter(n => !isKnownItem(n));
+    execute: async (input: Record<string, unknown>) => {
+      const items = input.items;
+      if (!Array.isArray(items) || items.length === 0 ||
+          items.some(item => typeof item !== 'string' || !item.trim())) {
+        return problem('No item names were given.', 'Ask the wearer which items to add.');
+      }
+      const names = items.map(item => item.trim());
+      const unknown = names.filter(name => !isKnownItem(name));
       if (unknown.length) {
-        // Name what would work, so the assistant can retry instead of giving up.
         return problem(
           `Not on the menu: ${unknown.join(', ')}.`,
-          `Offer these and call again: ${menuNames().join(', ')}.`,
+          `Offer the closest options and let the wearer choose: ${closestItems(unknown).slice(0, 3).join(', ')}.`,
         );
       }
-      addItems(names); // same state update the buttons call, so the screen re-renders
+      // The same action the Add buttons use, so the screen updates. It returns
+      // the updated state rather than queuing it, so the reply is never stale.
+      const {cart, total} = addItems(names);
       return JSON.stringify({
+        summary: names.length > 3 ? `Added ${names.length} items.` : `Added ${names.join(', ')}.`,
         added: names,
-        cart: getCart(),
-        total: getTotal(),
-        next_action: 'Confirm the additions in one short sentence. Stop and talk.',
+        cart, // items with stable IDs, so "remove that" can refer to them
+        total,
       });
     },
   }, signal);
 }
 ```
 
-Wire it up per framework — the definitions above do not change:
-
-```ts
-// Vanilla TS: once at startup, after the state it closes over exists.
-const ctx = document.modelContext;
-if (ctx?.registerTool) registerCartTools(ctx);
-```
-
 ```tsx
-// React: an effect owns the lifetime, and the AbortSignal unregisters on unmount.
+// React: the effect owns the tools' lifetime; aborting unregisters them.
 useEffect(() => {
   const ctx = document.modelContext;
-  if (!ctx?.registerTool) return; // surface absent: D-pad path still works
+  if (!ctx?.registerTool) return; // no WebMCP: the app still works without voice
   const ac = new AbortController();
-  registerCartTools(ctx, ac.signal);
+  void registerCartTools(ctx, ac.signal);
   return () => ac.abort();
 }, []);
 ```
 
+These facts fail silently, so check them:
 
-Name tools `appprefix_verb_noun`. Registration fails on an empty or duplicate
-name, an unserializable schema, or an already-aborted signal, and reports it
-either by throwing or by rejecting depending on the build — `safeRegister`
-covers both, so a failed tool is logged rather than silently absent or fatal.
-Always return the cleanup that aborts the controller; skipping it leaves tools
-registered against an unmounted tree.
+- WebMCP is off by default and enabled per device, for example through
+  Developer Mode. Feature-detect `document.modelContext?.registerTool`, and
+  relaunch the app after enabling WebMCP before retesting.
+- Read app state when the tool runs, from a store, ref, or getter. A tool
+  registered once from a React effect that closes over `useState` values will
+  report and change stale state while the screen shows something else.
+- Serve the app over HTTPS. Do not add a library that defines its own
+  `document.modelContext`; tools registered there never reach Meta AI.
+- A resolved `registerTool()` means the page accepted the tool, not that Meta
+  AI can call it. Reserved names (`openUrl`, `goBack`, `goForward`, `reload`,
+  `getCurrentUrl`, `getPageTitle`, `getPageText`) are rejected without any
+  error on the page, and `getTools()` lists only the page's own tools.
+- Scalar `enum`, bounds, and defaults do not reach Meta AI. State allowed
+  values in the description, and validate every argument in the tool.
+- Always return a value; `undefined` is reported as a failure. `isError` is not
+  treated as a failure flag. Return problems the wearer can fix as data, and
+  throw only for real errors.
+- Forward the call's `signal` to `fetch` and other long work. A call is
+  cancelled at the deadline or when the wearer leaves the app. Cancellation
+  does not undo work already done.
 
-`name` accepts 128 characters, but the assistant re-registers it under a prefix
-inside a 64-character budget, leaving **57** for yours. Longer names are
-shortened without rewriting characters, so two that agree in their first 57
-collide. Differ early — `cart_add` and `cart_remove`, not a long shared prefix
-with the distinguishing word last.
+## Test conversations on glasses
 
-These names are reserved for the browser's own tools and are rejected:
-`openUrl`, `goBack`, `goForward`, `reload`, `getCurrentUrl`, `getPageTitle`,
-`getPageText`. The rejection happens *after* registration resolves, so it is
-silent from the page — nothing throws, nothing rejects, and the tool simply
-never reaches Meta AI.
-
-A property is required only if listed in the schema's `required` array. An
-absent or empty array means nothing is required, so the assistant may call
-without it and `execute` has to cope.
-
-`execute` gets a 10-second deadline for assistant-originated calls. Forward its
-`signal` to any `fetch` or long-running work; on expiry the invocation is
-aborted best-effort and a late result is ignored.
-
-`execute` receives the arguments object and `{signal}`, and may be async. Return
-a string, an object (serialized for you), or `{content: [{type: 'text', text}]}`,
-with enough state for the assistant's next decision rather than an
-acknowledgement.
-
-**There is no failure flag in a result.** A fulfilled result is always reported
-as success, and `isError` is dropped along with every non-text field. For a
-*handled* condition — an item not on the menu — return an ordinary result whose
-JSON describes it (`{error, message, next_action}`) so Meta AI can explain it
-and continue. **Throw or reject** only for what the model cannot act on, and to
-signal cancellation; that is the only real failure channel.
-
-Mutate through the same state path the UI uses. The wearer is looking at the
-screen while speaking, so a tool that changes state without re-rendering leaves
-a stale display. Mark a read-only tool with `annotations: {readOnlyHint: true}`.
-
-## Write results the model can steer on
-
-A `description` is read once, when Meta AI decides which tool to call; after
-that it steers on the most recent result. Put the contract in the result.
-
-**Speech ends the turn.** Meta AI speaks and its turn closes, so an instruction
-shaped "say X, then call Y" never reaches Y. End every non-terminal result with
-an explicit `next_action` saying whether to call another tool or stop and talk,
-and make everything a result asks for deliverable in one utterance.
-
-**The page is the referee.** Never accept Meta AI's account of what happened.
-Tools return facts the page can verify, and if an outcome can be scored the page
-scores it. When the model must both report what the wearer said and act on it,
-fuse both into one call so there is no path to a result that skips the check.
-
-**Return the new state with every mutation**, and make failure modes explicit in
-the result — "wrong turn", "nothing found", "not your move" — so Meta AI
-explains rather than guesses.
-
-**Never put a real answer, or any value the model must not guess, in a parameter
-description.** A model will send the example. `"coffee, sugar, cream"` is safe
-because it is the menu; a puzzle solution or a target word is not.
-
-**Validate arguments inside `execute`.** The assistant chooses them and nothing
-enforces `inputSchema` against what arrives. Do not take an irreversible action
-on plausible-looking arguments alone.
-
-## Guardrails belong in the document head
-
-Tool descriptions and the document `<title>` and `<meta name="description">`
-are what the assistant always reads. Put behavior you cannot afford to lose
-there, such as confirming in one short sentence rather than reading a whole list
-back, or never completing a purchase without an explicit yes.
-
-## Verify
-
-Confirm `await document.modelContext.getTools()` lists **every** tool, not just
-the first. A short list means a registration failed and the others were
-stranded. A hidden page suspends timers and promises, so keep the display awake
-and check `document.visibilityState === 'visible'` before trusting a result.
-
-Check that a list argument survives all three shapes a host may send: a
-JSON-encoded array, a comma-separated string, and a newline-separated string.
-
-Check that no tool name is a reserved one, and that no two names agree in their
-first 57 characters — both fail silently, with the tool simply never reaching
-Meta AI.
-
-Run `ai-glasses-webapp-test` with the assistant path exercised and with the app
-driven by D-pad only, plus a build where the surface is absent.
-
-Do not let a hand-written test double define the contract. A stub returning
-`Promise.resolve()` passes whatever the code assumes about the return value and
-proves nothing about the browser. Cover a stub that returns a non-thenable and
-one that throws synchronously, and assert the app still renders and every other
-tool still registers.
+- Script five to ten spoken sessions and run them on glasses: multi-step
+  requests, an unknown item, and a cancellation. A session passes when the
+  screen ends in the right state and the spoken replies make sense.
+- Tools are available only while the app is in front, so keep it open and the
+  glasses awake while testing.
+- Run `ai-glasses-webapp-test` for the app itself; it does not exercise Meta
+  AI. Also check the app with no assistant and with no WebMCP surface.
