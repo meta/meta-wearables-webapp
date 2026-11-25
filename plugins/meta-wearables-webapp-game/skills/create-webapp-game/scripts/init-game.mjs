@@ -119,11 +119,11 @@ function isProbablyText(file) {
 }
 
 /**
- * Escape for an HTML double-quoted attribute value. A description is prose the caller typed, so
+ * Escape for HTML text or a double-quoted attribute value. Titles and descriptions are prose, so
  * `&` and `<` are ordinary characters in it ("Dodge & duck") that would otherwise land in the
  * markup as an entity fragment or a stray tag. `&` must be replaced first.
  */
-function escapeHtmlAttribute(value) {
+function escapeHtml(value) {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -193,7 +193,13 @@ function main() {
     if (!isProbablyText(file)) continue;
     const before = fs.readFileSync(file, 'utf8');
     if (!before.includes(NAME_TOKEN) && !before.includes(TITLE_TOKEN)) continue;
-    const after = before.split(NAME_TOKEN).join(args.name).split(TITLE_TOKEN).join(args.title);
+    // The title token is inside a JSON string, HTML text, or Markdown prose. Encode for that
+    // context so punctuation remains text rather than becoming JSON syntax or HTML markup.
+    const extension = path.extname(file);
+    const title = extension === '.json'
+      ? JSON.stringify(args.title).slice(1, -1)
+      : extension === '.html' ? escapeHtml(args.title) : args.title;
+    const after = before.split(NAME_TOKEN).join(args.name).split(TITLE_TOKEN).join(title);
     fs.writeFileSync(file, after);
     filesChanged += 1;
   }
@@ -206,7 +212,7 @@ function main() {
     const before = fs.readFileSync(indexHtml, 'utf8');
     const after = before.replace(
       /(<meta\s+name="description"\s+content=")[^"]*(")/i,
-      (_m, open, close) => `${open}${escapeHtmlAttribute(args.description)}${close}`,
+      (_m, open, close) => `${open}${escapeHtml(args.description)}${close}`,
     );
     if (after === before) fail('could not find <meta name="description"> in src/index.html');
     fs.writeFileSync(indexHtml, after);
